@@ -1,0 +1,134 @@
+---
+title: "Adding cluster info"
+output: html_notebook
+---
+
+# Dependencies
+```{r}
+library(Seurat)
+```
+
+# Load all seurat objects
+
+```{r}
+seurat <- readRDS("../../output/seurat_integrated.rds")
+epithelial <- readRDS("../../output/epithelial_cells.rds")
+stromal <- readRDS("../../output/stromal_cells.rds")
+endothelial <- readRDS("../../output/endothelial_cells.rds")
+myeloid <- readRDS("../../output/myeloid_cells.rds")
+lymphocytes <- readRDS("../../output/lymphocyte_cells.rds")
+mesothelial <- readRDS("../../output/mesothelial_cells.rds")
+``` 
+
+# Add broad clusters to subsets
+```{r}
+epithelial$broad.cluster <- Idents(seurat)[colnames(epithelial)]
+stromal$broad.cluster <- Idents(seurat)[colnames(stromal)]
+endothelial$broad.cluster <- Idents(seurat)[colnames(endothelial)]
+myeloid$broad.cluster <- Idents(seurat)[colnames(myeloid)]
+lymphocytes$broad.cluster <- Idents(seurat)[colnames(lymphocytes)]
+mesothelial$broad.cluster <- Idents(seurat)[colnames(mesothelial)]
+```
+
+
+```{r}
+DimPlot(epithelial, group.by="broad.cluster")
+DimPlot(stromal, group.by="broad.cluster")
+DimPlot(endothelial, group.by="broad.cluster")
+DimPlot(myeloid, group.by="broad.cluster")
+DimPlot(lymphocytes, group.by="broad.cluster")
+DimPlot(mesothelial, group.by="broad.cluster")
+```
+
+```{r}
+saveRDS(epithelial, file = "../../output/epithelial_cells.rds")
+saveRDS(stromal, file = "../../output/stromal_cells.rds")
+saveRDS(endothelial, file = "../../output/endothelial_cells.rds")
+saveRDS(myeloid, file = "../../output/myeloid_cells.rds")
+saveRDS(lymphocytes, file = "../../output/lymphocyte_cells.rds")
+saveRDS(mesothelial, file = "../../output/mesothelial_cells.rds")
+```
+
+
+# Add high-resolution clusters to full seurat
+```{r}
+epithelial_clusters <- data.frame(cell = colnames(epithelial),
+                                  cluster = paste0("Epithelial_", 
+                                                   epithelial$seurat_clusters))
+stroma_clusters <- data.frame(cell = colnames(stromal),
+                                  cluster = paste0("Stroma_", 
+                                                   stromal$seurat_clusters))
+endothelial_clusters <- data.frame(cell = colnames(endothelial),
+                                  cluster = paste0("Endothelial_", 
+                                                   endothelial$seurat_clusters))
+myeloid_clusters <- data.frame(cell = colnames(myeloid),
+                                  cluster = paste0("Myeloid_", 
+                                                   myeloid$seurat_clusters))
+lymphocytes_clusters <- data.frame(cell = colnames(lymphocytes),
+                                  cluster = paste0("Lymphocytes_", 
+                                                   lymphocytes$seurat_clusters))
+mesothelial_clusters <- data.frame(cell = colnames(mesothelial),
+                                  cluster = paste0("Mesothelial_", 
+                                                   mesothelial$seurat_clusters))
+all_clusters <- bind_rows(epithelial_clusters, stroma_clusters, endothelial_clusters,
+                          myeloid_clusters, lymphocytes_clusters, mesothelial_clusters)
+```
+
+```{r}
+seurat$cluster_high_res <- "Doublet"
+seurat$cluster_high_res[match(all_clusters$cell, colnames(seurat))] <- all_clusters$cluster
+```
+
+
+# Remove doublets & add cell types
+
+```{r}
+annotation <- read.csv("~/Projects/thebaud/lung_project/data/cluster_annotations.csv",
+                       stringsAsFactors = F)
+annotation <- annotation[,1:3]
+annotation$tmp <- paste0(annotation$Subtype, "_", annotation$Cluster)
+```
+
+```{r}
+seurat$CellType <- "Doublet"
+seurat$CellType <- annotation$Cell.type[match(seurat$cluster_high_res, annotation$tmp)]
+```
+
+Remove doublets
+```{r}
+cells_keep <- colnames(seurat)[seurat$CellType != "Doublet"]
+```
+
+```{r}
+seurat <- subset(seurat, cells = cells_keep)
+```
+
+```{r}
+seurat <- SCTransform(seurat, vars.to.regress=c("S.Score", "G2M.Score",
+                                                "percent.mito"))
+seurat <- RunPCA(seurat, verbose=F)
+seurat <- RunUMAP(seurat, dims=1:30)
+```
+
+Re-level cell types
+```{r}
+seurat$CellType <- factor(seurat$CellType, levels=annotation$Cell.type)
+Idents(seurat) <- seurat$CellType
+```
+
+```{r}
+DimPlot(seurat, label=T) + NoLegend()
+```
+
+
+```{r}
+DefaultAssay(seurat) <- "RNA"
+```
+
+
+```{r}
+saveRDS(seurat, file="../../output/seurat_integrated.rds")
+```
+
+
+

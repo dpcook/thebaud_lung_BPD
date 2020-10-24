@@ -1,0 +1,491 @@
+---
+title: "Subset - Myeloid"
+output: html_notebook
+---
+
+# Dependencies
+
+```{r}
+library(Seurat)
+library(muscat)
+library(ggplot2)
+library(dplyr)
+library(fgsea)
+```
+
+# Load the data
+
+```{r}
+seurat <- readRDS("../../output/seurat_integrated.rds")
+```
+
+# Find Myeloid populations
+
+```{r}
+DimPlot(seurat, label=T)
+FeaturePlot(seurat, features="Cd14")
+```
+
+4,6,9,13,18 (18 is not Cd14+, but is Mast cells)
+
+```{r}
+seurat <- subset(seurat, idents=c(4,6,9,13,18))
+```
+
+# Re-process
+
+```{r}
+seurat.list <- SplitObject(seurat, split.by="Sample")
+```
+
+```{r}
+for (i in 1:length(seurat.list)) {
+    seurat.list[[i]] <- SCTransform(seurat.list[[i]], 
+                                    vars.to.regress=c("S.Score", "G2M.Score",
+                                                      "percent.mt"),
+                                    verbose = FALSE)
+}
+
+
+seurat.features <- SelectIntegrationFeatures(seurat.list, 
+                                             nfeatures = 3000)
+seurat.list <- PrepSCTIntegration(seurat.list, 
+                                  anchor.features = seurat.features,
+                                  verbose = T)
+seurat.anchors <- FindIntegrationAnchors(seurat.list, 
+                                         normalization.method = "SCT",
+                                         anchor.features = seurat.features,
+                                         verbose = T)
+seurat <- IntegrateData(seurat.anchors, 
+                        normalization.method = "SCT",
+                        verbose = T)
+rm(seurat.anchors, seurat.list, seurat.features)
+
+# Dimensionality reduction and re-cluster
+seurat <- RunPCA(seurat, verbose=F)
+seurat <- RunUMAP(seurat, dims=1:20)
+seurat <- FindNeighbors(seurat, dims=1:20)
+seurat <- FindClusters(seurat, resolution=0.15)
+```
+
+```{r}
+ElbowPlot(seurat, ndims=50)
+```
+
+```{r}
+DimPlot(seurat, label=T)
+DimPlot(seurat, group.by="Oxygen")
+```
+
+```{r}
+markers <- FindAllMarkers(seurat, only.pos = T, logfc.threshold = 2)
+```
+
+```{r}
+markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+```
+
+Cluster 6 - Epithelial
+Cluster 7 - T cells
+Cluster 11 - Fibroblasts
+Cluster 12 - Endothelial
+
+```{r}
+DimPlot(seurat, group.by="Phase")
+FeaturePlot(seurat, features=c("Cldn5", "Col1a1"))
+```
+
+# Filter out contaminating populations
+```{r}
+seurat <- subset(seurat, idents=c(0,1,2,3,4,5,8,9,10,13))
+```
+
+```{r}
+seurat.list <- SplitObject(seurat, split.by="Sample")
+
+for (i in 1:length(seurat.list)) {
+    seurat.list[[i]] <- SCTransform(seurat.list[[i]], 
+                                    vars.to.regress=c("S.Score", "G2M.Score",
+                                                      "percent.mt"),
+                                    verbose = FALSE)
+}
+
+
+seurat.features <- SelectIntegrationFeatures(seurat.list, 
+                                             nfeatures = 3000)
+seurat.list <- PrepSCTIntegration(seurat.list, 
+                                  anchor.features = seurat.features,
+                                  verbose = T)
+seurat.anchors <- FindIntegrationAnchors(seurat.list, 
+                                         normalization.method = "SCT",
+                                         anchor.features = seurat.features,
+                                         verbose = T)
+seurat <- IntegrateData(seurat.anchors, 
+                        normalization.method = "SCT",
+                        verbose = T)
+rm(seurat.anchors, seurat.list, seurat.features)
+
+# Dimensionality reduction and re-cluster
+seurat <- RunPCA(seurat, verbose=F)
+seurat <- RunUMAP(seurat, dims=1:30)
+seurat <- FindNeighbors(seurat, dims=1:30)
+seurat <- FindClusters(seurat, resolution=0.2)
+```
+
+```{r}
+DimPlot(seurat, label=T)
+DimPlot(seurat, group.by="Oxygen")
+```
+
+# Re-embed unaligned data
+
+```{r}
+DefaultAssay(seurat) <- "RNA"
+seurat <- SCTransform(seurat, vars.to.regress=c("S.Score", "G2M.Score", "percent.mito"))
+seurat <- RunPCA(seurat, verbose=F)
+seurat <- RunUMAP(seurat, dims=1:30)
+```
+
+```{r}
+DimPlot(seurat, label=T)
+DimPlot(seurat, group.by="Sample")
+DimPlot(seurat, group.by="Oxygen")
+DimPlot(seurat, group.by="Age", split.by="Oxygen")
+```
+
+# Save point
+```{r}
+saveRDS(seurat, "../../output/myeloid_cells.rds")
+```
+
+# Cell type frequency
+```{r}
+clusters_freq <- seurat@meta.data %>%
+  group_by(Oxygen, seurat_clusters) %>%
+  summarise(n=n()) %>%
+  mutate(relative_freq = n/sum(n))
+clusters_freq$seurat_clusters <- factor(clusters_freq$seurat_clusters)
+clusters_freq$Oxygen <- factor(clusters_freq$Oxygen, levels=c("Normoxia", "Hyperoxia"))
+```
+
+```{r}
+dark2 <- RColorBrewer::brewer.pal(5, "Dark2")
+freq_plot <- ggplot(clusters_freq, aes(x=seurat_clusters, y=relative_freq)) +
+  geom_col(aes(fill=Oxygen), color="black", position="dodge") +
+  ylab("Relative Frequency") +
+  scale_fill_manual(values=dark2[1:2]) +
+  scale_y_continuous(expand=c(0,0)) +
+  facet_wrap( ~ seurat_clusters, ncol=6, scales="free") +
+  theme_classic() +
+  theme(strip.background=element_blank(),
+        strip.text = element_text(size=11),
+        legend.title = element_blank(),
+        legend.text = element_text(size=12),
+        axis.text.y=element_text(size=10, color='black'),
+        axis.text.x=element_text(size=10, color='black', angle=45, hjust=1),
+        axis.title.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
+
+```{r}
+freq_plot
+```
+
+# Differential state analysis
+
+```{r}
+seurat.tmp <- seurat
+seurat.tmp$UniqueSample <- paste(seurat.tmp$orig.ident)
+# Technically P3_P7_1_Bar1 and P3_P7_2_Bar1, for example, are the same mice--should merge
+seurat.tmp$UniqueSample[seurat.tmp$UniqueSample %in% c("P3_P7_1", "P3_P7_2")] <- "P3_P7"
+seurat.tmp$UniqueSample <- paste(seurat.tmp$UniqueSample, seurat.tmp$Barcode, sep="_")
+
+DefaultAssay(seurat.tmp) <- "RNA" #can switch back to integrated if desired
+
+seurat.sce <- as.SingleCellExperiment(seurat.tmp)
+
+seurat.sce <- prepSCE(seurat.sce,
+                      cluster_id = "seurat_clusters",
+                      group_id = "Oxygen",
+                      sample_id = "UniqueSample",
+                      drop=T)
+seurat.sce$group_id <- factor(seurat.sce$group_id, levels=c("Normoxia", "Hyperoxia"))
+
+nk <- length(kids <- levels(seurat.sce$cluster_id))
+ns <- length(sids <- levels(seurat.sce$sample_id))
+names(kids) <- kids
+names(sids) <- sids
+
+pb <- aggregateData(seurat.sce,
+                    assay = "counts", fun = "sum",
+                    by = c("cluster_id", "sample_id"))
+
+pb$group_id <- factor(pb$group_id, levels=c("Normoxia", "Hyperoxia"))
+res <- pbDS(pb, verbose = FALSE)
+tmp <- seurat.sce
+counts(tmp) <- as.matrix(counts(tmp))
+result_table <- resDS(tmp, res, bind = "row", frq = FALSE, cpm = FALSE)
+rm(tmp)
+
+#Trim columns we don't really care about
+result_table$p_adj.glb__Hyperoxia <- NULL
+
+#Get the frequency of Nox/Hyx cells in a cluster that express a gene
+count_mat <- as.matrix(seurat[["RNA"]]@data) > 0
+
+cluster_list <- unique(result_table$cluster_id)
+
+result_table$Normoxia.frq <- 0
+normoxia_cells <- colnames(seurat)[seurat$Oxygen == "Normoxia"]
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$seurat_clusters == cluster_list[i]]
+  test_cells <- intersect(normoxia_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$Normoxia.frq[row_ind] <- frq
+}
+
+hyperoxia_cells <- colnames(seurat)[seurat$Oxygen == "Hyperoxia"]
+result_table$Hyperoxia.frq <- 0
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$seurat_clusters == cluster_list[i]]
+  test_cells <- intersect(hyperoxia_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$Hyperoxia.frq[row_ind] <- frq
+}
+
+# Save!
+write.csv(result_table, file = "../../output/dsa_results_myeloid_all.csv", row.names = F)
+```
+
+# Normoxia: Time-dependent genes
+```{r}
+seurat.tmp <- seurat
+seurat.tmp$UniqueSample <- paste(seurat.tmp$orig.ident)
+# Technically P3_P7_1_Bar1 and P3_P7_2_Bar1, for example, are the same mice--should merge
+seurat.tmp$UniqueSample[seurat.tmp$UniqueSample %in% c("P3_P7_1", "P3_P7_2")] <- "P3_P7"
+seurat.tmp$UniqueSample <- paste(seurat.tmp$UniqueSample, seurat.tmp$Barcode, sep="_")
+
+DefaultAssay(seurat.tmp) <- "RNA" #can switch back to integrated if desired
+
+#Nox cells
+cells_keep <- colnames(seurat.tmp)[seurat.tmp$Oxygen=="Normoxia" &
+                                 seurat.tmp$Age %in% c("P3", "P14")]
+seurat.tmp <- subset(seurat.tmp, cells=cells_keep)
+seurat.tmp$Age <- factor(seurat.tmp$Age, levels=c("P3", "P14"))
+
+
+seurat.sce <- as.SingleCellExperiment(seurat.tmp)
+
+seurat.sce <- prepSCE(seurat.sce,
+                      cluster_id = "seurat_clusters",
+                      group_id = "Age",
+                      sample_id = "UniqueSample",
+                      drop=T)
+
+nk <- length(kids <- levels(seurat.sce$cluster_id))
+ns <- length(sids <- levels(seurat.sce$sample_id))
+names(kids) <- kids
+names(sids) <- sids
+
+pb <- aggregateData(seurat.sce,
+                    assay = "counts", fun = "sum",
+                    by = c("cluster_id", "sample_id"))
+pb$group_id <- factor(pb$group_id, levels=c("P3", "P14"))
+
+#Need to manually set model matrix and contrast here for some reason?? Didn't for Nox/Hyx
+ei <- metadata(seurat.sce)$experiment_info
+mm <- model.matrix(~0 + ei$group_id)
+dimnames(mm) <- list(ei$sample_id, levels(ei$group_id))
+contrast <- limma::makeContrasts("P14-P3", levels=mm)
+
+res <- pbDS(pb, design=mm, contrast=contrast, verbose = F)
+####
+
+tmp <- seurat.sce
+counts(tmp) <- as.matrix(counts(tmp))
+result_table <- resDS(tmp, res, bind = "row", frq = FALSE, cpm = FALSE)
+rm(tmp)
+
+#Trim columns we don't really care about
+result_table[,"p_adj.glb__P14-P3"] <- NULL
+
+#Get the frequency of P3/P14 cells in a cluster that express a gene
+count_mat <- as.matrix(seurat[["RNA"]]@data) > 0
+
+cluster_list <- unique(result_table$cluster_id)
+
+result_table$P3.frq <- 0
+P3_cells <- colnames(seurat)[seurat$Age == "P3" & seurat$Oxygen == "Normoxia"]
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$seurat_clusters == cluster_list[i]]
+  test_cells <- intersect(P3_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$P3.frq[row_ind] <- frq
+}
+
+result_table$P14.frq <- 0
+P14_cells <- colnames(seurat)[seurat$Age == "P14" & seurat$Oxygen == "Normoxia"]
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$seurat_clusters == cluster_list[i]]
+  test_cells <- intersect(P14_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$P14.frq[row_ind] <- frq
+}
+
+write.csv(result_table, file = "../../output/dsa_results_myeloid_nox_development.csv", row.names = F)
+```
+
+# Hyperoxia: Time-dependent genes
+```{r}
+seurat.tmp <- seurat
+seurat.tmp$UniqueSample <- paste(seurat.tmp$orig.ident)
+# Technically P3_P7_1_Bar1 and P3_P7_2_Bar1, for example, are the same mice--should merge
+seurat.tmp$UniqueSample[seurat.tmp$UniqueSample %in% c("P3_P7_1", "P3_P7_2")] <- "P3_P7"
+seurat.tmp$UniqueSample <- paste(seurat.tmp$UniqueSample, seurat.tmp$Barcode, sep="_")
+
+DefaultAssay(seurat.tmp) <- "RNA" #can switch back to integrated if desired
+
+#Nox cells
+cells_keep <- colnames(seurat.tmp)[seurat.tmp$Oxygen=="Hyperoxia" &
+                                 seurat.tmp$Age %in% c("P3", "P14")]
+seurat.tmp <- subset(seurat.tmp, cells=cells_keep)
+seurat.tmp$Age <- factor(seurat.tmp$Age, levels=c("P3", "P14"))
+
+
+seurat.sce <- as.SingleCellExperiment(seurat.tmp)
+
+seurat.sce <- prepSCE(seurat.sce,
+                      cluster_id = "seurat_clusters",
+                      group_id = "Age",
+                      sample_id = "UniqueSample",
+                      drop=T)
+
+nk <- length(kids <- levels(seurat.sce$cluster_id))
+ns <- length(sids <- levels(seurat.sce$sample_id))
+names(kids) <- kids
+names(sids) <- sids
+
+pb <- aggregateData(seurat.sce,
+                    assay = "counts", fun = "sum",
+                    by = c("cluster_id", "sample_id"))
+pb$group_id <- factor(pb$group_id, levels=c("P3", "P14"))
+
+#Need to manually set model matrix and contrast here for some reason?? Didn't for Nox/Hyx
+ei <- metadata(seurat.sce)$experiment_info
+mm <- model.matrix(~0 + ei$group_id)
+dimnames(mm) <- list(ei$sample_id, levels(ei$group_id))
+contrast <- limma::makeContrasts("P14-P3", levels=mm)
+
+res <- pbDS(pb, design=mm, contrast=contrast, verbose = F)
+####
+
+tmp <- seurat.sce
+counts(tmp) <- as.matrix(counts(tmp))
+result_table <- resDS(tmp, res, bind = "row", frq = FALSE, cpm = FALSE)
+rm(tmp)
+
+#Trim columns we don't really care about
+result_table[,"p_adj.glb__P14-P3"] <- NULL
+
+#Get the frequency of P3/P14 cells in a cluster that express a gene
+count_mat <- as.matrix(seurat[["RNA"]]@data) > 0
+
+cluster_list <- unique(result_table$cluster_id)
+
+result_table$P3.frq <- 0
+P3_cells <- colnames(seurat)[seurat$Age == "P3" & seurat$Oxygen == "Hyperoxia"]
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$seurat_clusters == cluster_list[i]]
+  test_cells <- intersect(P3_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$P3.frq[row_ind] <- frq
+}
+
+result_table$P14.frq <- 0
+P14_cells <- colnames(seurat)[seurat$Age == "P14" & seurat$Oxygen == "Hyperoxia"]
+for(i in 1:length(cluster_list)){
+  #Which cells to calc freq on
+  cluster_cells <- colnames(seurat)[seurat$seurat_clusters == cluster_list[i]]
+  test_cells <- intersect(P14_cells, cluster_cells)
+  #Which rows of result_table to fill
+  row_ind <- which(result_table$cluster_id == cluster_list[i])
+  frq <- rowSums(count_mat[result_table$gene[row_ind],test_cells]) / length(test_cells)
+  result_table$P14.frq[row_ind] <- frq
+}
+
+write.csv(result_table, file = "../../output/dsa_results_myeloid_hyx_development.csv", row.names = F)
+```
+
+# GSEA on all clusters by logFC
+
+```{r}
+result_table <- read.csv("../../output/dsa_results_myeloid_all.csv")
+```
+
+```{r}
+hallmarks <- fgsea::gmtPathways("~/Data/GeneLists/hallmark.genesets.v6.1.symbols.gmt")
+kegg <- fgsea::gmtPathways("~/Data/GeneLists/kegg.genesets.v6.1.symbols.gmt")
+go <- fgsea::gmtPathways("~/Data/GeneLists/GOTerms.BP.v6.1.symbols.gmt")
+reactome <- fgsea::gmtPathways("~/Data/GeneLists/reactome.genesets.v6.1.symbols.gmt")
+
+gene_sets <- c(hallmarks, kegg, go, reactome)
+```
+
+## Loop through clusters
+
+```{r}
+runGSEA <- function(cluster){
+  results <- filter(result_table, cluster_id == cluster)
+  results <- filter(results, Normoxia.frq >= 0.05 |
+                      Hyperoxia.frq >= 0.05)
+  results <- arrange(results, desc(logFC__Hyperoxia))
+  
+  cluster_genes <- results$logFC__Hyperoxia
+  names(cluster_genes) <- toupper(results$gene)
+  
+  gsea <- fgsea(pathways = gene_sets,
+                stats = cluster_genes,
+                minSize=15,
+                maxSize=500,
+                nproc = 2,
+                nperm=100000)
+  gsea$cluster <- cluster
+  
+  return(gsea)
+}
+```
+
+```{r}
+cluster_list <- unique(result_table$cluster_id)
+
+fgsea_results <- lapply(cluster_list, runGSEA)
+```
+
+```{r}
+fgsea_results <- do.call("rbind", fgsea_results)
+fgsea_results <- as.data.frame(fgsea_results)
+fgsea_results$leadingEdge <- as.character(fgsea_results$leadingEdge)
+```
+
+```{r}
+writexl::write_xlsx(fgsea_results, path = "../../output/dsa_gsea_myeloid_results.xlsx")
+```
+
+
+
+
