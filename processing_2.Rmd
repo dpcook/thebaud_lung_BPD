@@ -1,0 +1,108 @@
+---
+title: "Processing merged seurat"
+output: html_notebook
+---
+
+# Dependencies
+```{r}
+library(Seurat)
+library(harmony)
+library(dplyr)
+library(viridis)
+```
+
+# Load the data
+
+```{r}
+seurat <- readRDS("../output/merged_data_unfiltered.rds")
+```
+
+# Pre-processing the data
+
+```{r}
+cells_keep <- colnames(seurat)[seurat$Age != "NA"] # removes doublets and negatives
+seurat <- subset(seurat, cells=cells_keep)
+```
+
+```{r}
+seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = "^mt-")
+VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+## Normalization and feature selection
+```{r}
+seurat <- NormalizeData(seurat)
+seurat <- FindVariableFeatures(seurat, selection.method = "vst",
+                               nfeatures=3000)
+```
+
+## Cell Cycle Classification
+I have run through this without regressing out cell cycle and have found that embeddings and clusterings end up being driven by cell cycle stage, so we'll regress it out.
+
+```{r}
+s.genes <- Hmisc::capitalize(tolower(cc.genes$s.genes))
+g2m.genes <- Hmisc::capitalize(tolower(cc.genes$g2m.genes))
+```
+
+```{r}
+seurat <- CellCycleScoring(seurat, s.features = s.genes, g2m.features = g2m.genes, 
+                           set.ident = FALSE)
+```
+
+## Scaling and regressing out cell cycle
+
+```{r}
+seurat <- ScaleData(seurat, features=VariableFeatures(seurat),
+                    vars.to.regress=c("percent.mito", "nCount_RNA",
+                                      "S.Score", "G2M.Score"))
+seurat <- RunPCA(seurat, npcs=100, verbose=F)
+ElbowPlot(seurat, ndims=100)
+```
+
+## Integrate data with Harmony
+Goal here is to remove batch effects across samples
+
+```{r}
+seurat$Sample <- paste0(seurat$Age, "_", seurat$Oxygen)
+```
+
+```{r}
+seurat <- RunHarmony(seurat, "Sample", plot_convergence = T)
+```
+
+```{r}
+seurat <- RunUMAP(seurat, reduction="harmony", dims=1:40)
+```
+
+```{r}
+seurat <- FindNeighbors(seurat, reduction='harmony', dims=1:40)
+seurat <- FindClusters(seurat, resolution=0.2)
+```
+
+
+```{r}
+temp_data <- seurat@meta.data
+temp_data$UMAP1 <- Embeddings(seurat, 'umap')[,1]
+temp_data$UMAP2 <- Embeddings(seurat, 'umap')[,2]
+temp_data$Cluster <- Idents(seurat)
+shuffle <- sample(1:ncol(seurat), replace=F)
+temp_data <- temp_data[shuffle,]
+
+data_plot <- ggplot(temp_data, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(size=0.1, alpha=0.75, aes(color=Oxygen)) +
+  theme_void()
+ggsave(data_plot, filename = "~/Downloads/umap.oxygen.png", width=9, height=6)
+```
+
+
+```{r}
+DimPlot(seurat, label=T)
+DimPlot(seurat, group.by="Oxygen")
+DimPlot(seurat, group.by="Age")
+DimPlot(seurat, group.by="Phase")
+```
+
+```{r}
+saveRDS(seurat, file="../output/merged_data_filtered.rds")
+```
+
